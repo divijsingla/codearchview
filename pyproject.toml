@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codearchview"
+version = "0.1.0"
+description = "DFS code architecture extractor for TypeScript/TSX projects using tree-sitter + the TypeScript Language Server."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "codearchview" }]
+keywords = ["typescript", "architecture", "graph", "tree-sitter", "lsp"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "tree-sitter>=0.22,<0.24",
+    "tree-sitter-typescript>=0.23,<0.24",
+    "multilspy>=0.0.12",
+    "networkx>=3.2,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+codearchview = "codearchview.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/dsingla/codearchview"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codearchview"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

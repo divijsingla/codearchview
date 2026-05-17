@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Test / cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Language server cache (multilspy downloads runtimes here)
+.multilspy/
+multilspy_*.log
