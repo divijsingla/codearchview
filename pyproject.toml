@@ -36,7 +36,7 @@ dev = [
 codearchview = "codearchview.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/dsingla/codearchview"
+Homepage = "https://github.com/divijsingla/codearchview"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/codearchview"]

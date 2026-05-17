@@ -17,7 +17,7 @@ React Flow tab in your own app) and supports multiple granularities
 
 ```bash
 # from git (pin to a tag once published):
-pip install "git+https://github.com/dsingla/codearchview@main"
+pip install "git+https://github.com/divijsingla/codearchview@main"
 
 # or local checkout, editable:
 pip install -e .
