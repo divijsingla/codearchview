@@ -24,7 +24,8 @@ from .builder import GraphBuilder
 from .classify import classify_resolved_path, classify_specifier
 from .lsp import LspLocation, TypeScriptLsp
 from .parser import parse_file
-from .queries import imports_query
+from .paths_resolver import PathsResolver
+from .queries import imports_query, run_matches
 from .refs import extract_references
 from .symbols import extract_symbols, iter_default_export
 
@@ -38,11 +39,13 @@ class Traverser:
         project_root: Path,
         builder: GraphBuilder,
         lsp: Optional[TypeScriptLsp],
+        paths_resolver: Optional[PathsResolver] = None,
         follow_types: bool = True,
     ) -> None:
         self.project_root = project_root.resolve()
         self.builder = builder
         self.lsp = lsp
+        self.paths_resolver = paths_resolver
         self.follow_types = follow_types
         self._visited: set[Path] = set()
 
@@ -87,7 +90,7 @@ class Traverser:
 
     def _process_imports(self, pf, file_rel: str, queue: deque[Path]) -> None:
         q = imports_query("tsx" if pf.path.suffix == ".tsx" else "ts")
-        matches = q.matches(pf.tree.root_node)
+        matches = run_matches(q, pf.tree.root_node)
         for _, captures in matches:
             source_nodes = captures.get("source") or []
             if not source_nodes:
@@ -123,8 +126,16 @@ class Traverser:
 
     def _resolve_import_source(self, from_file: Path, source_node) -> Optional[Path]:
         """Resolve an import-source string node to a filesystem path."""
-        # Try the LSP first by asking for the definition of the source
-        # string (most TS servers respond with the resolved file).
+        spec = self._read_string_text(source_node) or ""
+
+        # tsconfig path-aliases + relative + baseUrl (handles `@/foo`).
+        if self.paths_resolver is not None and spec:
+            resolved = self.paths_resolver.resolve(spec, from_file)
+            if resolved is not None:
+                return resolved
+
+        # Try the LSP next: ask for the definition of the source string
+        # (most TS servers respond with the resolved file).
         if self.lsp is not None:
             line, col = source_node.start_point[0], source_node.start_point[1] + 1
             try:
@@ -135,12 +146,11 @@ class Traverser:
                 if loc.path.exists():
                     return loc.path
 
-        # Fallback: resolve relative paths manually with common extensions.
-        spec = self._read_string_text(source_node)
-        if spec is None or not (spec.startswith(".") or spec.startswith("/")):
-            return None
-        base = (from_file.parent / spec).resolve()
-        return _resolve_with_extensions(base)
+        # Last-ditch: plain relative resolution.
+        if spec.startswith(".") or spec.startswith("/"):
+            base = (from_file.parent / spec).resolve()
+            return _resolve_with_extensions(base)
+        return None
 
     @staticmethod
     def _read_string_text(node) -> Optional[str]:

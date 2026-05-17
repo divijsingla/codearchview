@@ -19,6 +19,7 @@ from . import __version__
 from .builder import GraphBuilder
 from .lsp import LspUnavailable, TypeScriptLsp
 from .parser import parse_file
+from .paths_resolver import PathsResolver
 from .traverser import Traverser
 
 
@@ -74,6 +75,22 @@ def main(argv: list[str] | None = None) -> int:
 
     builder = GraphBuilder(project_root=project_root, entry=args.entry)
 
+    # tsconfig path-aliases (e.g. `@/*` -> `./src/*`).  We try the
+    # explicit --tsconfig flag, then the common defaults.  This is
+    # crucial for projects that use aliases — the LSP does not
+    # reliably resolve import-source string positions.
+    tsconfig_paths = []
+    if args.tsconfig:
+        tsconfig_paths.append((project_root / args.tsconfig).resolve())
+    for default in ("tsconfig.app.json", "tsconfig.json", "tsconfig.base.json"):
+        cand = project_root / default
+        if cand.exists() and cand not in tsconfig_paths:
+            tsconfig_paths.append(cand)
+    paths_resolver = PathsResolver(project_root, tsconfig_paths)
+    if args.verbose:
+        logging.debug("tsconfigs loaded: %s", [str(p) for p in tsconfig_paths])
+        logging.debug("paths patterns: %s", paths_resolver.paths)
+
     if args.no_lsp:
         lsp = None
     else:
@@ -90,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                     project_root=project_root,
                     builder=builder,
                     lsp=lsp,
+                    paths_resolver=paths_resolver,
                     follow_types=not args.no_types,
                 ).traverse(entry)
         else:
@@ -97,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                 project_root=project_root,
                 builder=builder,
                 lsp=None,
+                paths_resolver=paths_resolver,
                 follow_types=not args.no_types,
             ).traverse(entry)
     except Exception:

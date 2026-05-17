@@ -20,7 +20,7 @@ from typing import Iterator
 from tree_sitter import Node
 
 from .parser import ParsedFile
-from .queries import jsx_body_query, top_level_query
+from .queries import jsx_body_query, run_captures, run_matches, top_level_query
 
 
 PASCAL_CASE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -45,10 +45,12 @@ def _lang_name(pf: ParsedFile) -> str:
 
 
 def _has_jsx(pf: ParsedFile, node: Node) -> bool:
-    q = jsx_body_query(_lang_name(pf))
-    # Restrict query to the subtree by checking nodes' byte ranges.
-    captures = q.captures(node)
-    # tree-sitter 0.22+ returns dict[capture_name, list[Node]]
+    # JSX nodes only exist in the TSX grammar; plain `.ts` files can't
+    # contain JSX so we short-circuit.
+    if _lang_name(pf) != "tsx":
+        return False
+    q = jsx_body_query("tsx")
+    captures = run_captures(q, node)
     if isinstance(captures, dict):
         return any(captures.values())
     return bool(captures)
@@ -102,7 +104,7 @@ def _node_point(node: Node) -> tuple[int, int]:
 def extract_symbols(pf: ParsedFile) -> list[Symbol]:
     """Return one Symbol per top-level named declaration, deduped by (name, start_byte)."""
     q = top_level_query(_lang_name(pf))
-    matches = q.matches(pf.tree.root_node)
+    matches = run_matches(q, pf.tree.root_node)
 
     seen: dict[tuple[str, int], Symbol] = {}
     for _, captures in matches:

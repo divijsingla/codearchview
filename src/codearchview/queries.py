@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from tree_sitter import Language, Query
+from tree_sitter import Language, Node, Query
+
+try:  # tree-sitter >= 0.25 moved match/capture iteration onto QueryCursor
+    from tree_sitter import QueryCursor  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - older tree-sitter (<0.25)
+    QueryCursor = None  # type: ignore[assignment]
 
 from .parser import TS_LANGUAGE, TSX_LANGUAGE
 
@@ -73,24 +78,30 @@ TOP_LEVEL_QUERY = """
 
 # Identifier references inside any subtree.  We classify by parent node
 # at extraction time (call_expression -> "calls", jsx_opening_element ->
-# "renders", type_identifier -> "uses-type").
-REFERENCES_QUERY = """
+# "renders", type_identifier -> "uses-type").  The non-JSX patterns
+# work in both `.ts` and `.tsx`; the JSX patterns are appended only for
+# the TSX grammar because plain TS doesn't define those node types.
+REFERENCES_QUERY_COMMON = """
 (call_expression function: (identifier) @call_ref)
 (call_expression function: (member_expression object: (identifier) @call_ref))
-(jsx_opening_element name: (identifier) @jsx_ref)
-(jsx_self_closing_element name: (identifier) @jsx_ref)
-(jsx_opening_element name: (member_expression object: (identifier) @jsx_ref))
-(jsx_self_closing_element name: (member_expression object: (identifier) @jsx_ref))
 (type_identifier) @type_ref
 (new_expression constructor: (identifier) @call_ref)
 """
 
+REFERENCES_QUERY_JSX = """
+(jsx_opening_element name: (identifier) @jsx_ref)
+(jsx_self_closing_element name: (identifier) @jsx_ref)
+(jsx_opening_element name: (member_expression object: (identifier) @jsx_ref))
+(jsx_self_closing_element name: (member_expression object: (identifier) @jsx_ref))
+"""
+
 # Detect whether a function/arrow body returns JSX (used to classify
-# PascalCase symbols as React components).
+# PascalCase symbols as React components).  `jsx_fragment` is not a
+# named node in tree-sitter-typescript; `<>` fragments contain at least
+# one `jsx_element` or `jsx_self_closing_element` child in practice.
 JSX_BODY_QUERY = """
 (jsx_element) @jsx
 (jsx_self_closing_element) @jsx
-(jsx_fragment) @jsx
 """
 
 
@@ -109,8 +120,34 @@ def top_level_query(language_name: str) -> Query:
 
 
 def references_query(language_name: str) -> Query:
-    return _compile(language_name, REFERENCES_QUERY)
+    if language_name == "tsx":
+        return _compile("tsx", REFERENCES_QUERY_COMMON + REFERENCES_QUERY_JSX)
+    return _compile("ts", REFERENCES_QUERY_COMMON)
 
 
 def jsx_body_query(language_name: str) -> Query:
     return _compile(language_name, JSX_BODY_QUERY)
+
+
+# ---------------------------------------------------------------------------
+# Compatibility helpers: run a query against a node and return matches /
+# captures in the same shape regardless of whether the installed
+# `tree-sitter` exposes the methods on `Query` (<0.25) or on `QueryCursor`
+# (>=0.25).
+# ---------------------------------------------------------------------------
+
+
+def run_matches(query: Query, node: Node):
+    """Return a list of (pattern_index, dict[capture_name, list[Node]])."""
+    if QueryCursor is not None:
+        cursor = QueryCursor(query)
+        return cursor.matches(node)
+    return query.matches(node)  # type: ignore[attr-defined]
+
+
+def run_captures(query: Query, node: Node):
+    """Return a dict[capture_name, list[Node]] for the given subtree."""
+    if QueryCursor is not None:
+        cursor = QueryCursor(query)
+        return cursor.captures(node)
+    return query.captures(node)  # type: ignore[attr-defined]

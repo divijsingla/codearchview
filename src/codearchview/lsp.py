@@ -114,6 +114,16 @@ class TypeScriptLsp:
         if self._ctx is not None:
             try:
                 self._ctx.__exit__(exc_type, exc, tb)
+            except Exception as cleanup_exc:
+                # multilspy's TS server teardown sometimes races on macOS:
+                # the Node process exits cleanly on its own, then psutil
+                # raises NoSuchProcess when multilspy tries to kill it.
+                # Swallow teardown noise unless we were already propagating
+                # a real exception (in which case the real exception wins).
+                if exc is None:
+                    logging.debug("LSP cleanup raised %s (ignored)", cleanup_exc)
+                else:
+                    logging.debug("LSP cleanup also raised %s", cleanup_exc)
             finally:
                 self._ctx = None
 

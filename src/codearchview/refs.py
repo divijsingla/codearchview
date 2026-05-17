@@ -16,7 +16,7 @@ from typing import Iterator
 from tree_sitter import Node
 
 from .parser import ParsedFile
-from .queries import references_query
+from .queries import references_query, run_captures
 from .symbols import Symbol
 
 
@@ -50,7 +50,7 @@ def _lang_name(pf: ParsedFile) -> str:
 
 def extract_references(pf: ParsedFile, sym: Symbol) -> list[Reference]:
     q = references_query(_lang_name(pf))
-    captures = q.captures(pf.tree.root_node)
+    captures = run_captures(q, pf.tree.root_node)
     # tree-sitter 0.22+: dict[capture_name, list[Node]]
     if not isinstance(captures, dict):
         # Fallback for older API: list[(node, capture_name)]
