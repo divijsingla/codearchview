@@ -52,43 +52,96 @@ class Traverser:
     # ---- public ------------------------------------------------------------
 
     def traverse(self, entry: Path) -> None:
-        queue: deque[Path] = deque([entry.resolve()])
+        """Two-pass traversal so symbol-level edges are deterministic.
+
+        Pass 1: walk imports depth-first, registering every reachable
+        file (as nodes) plus every top-level symbol inside them.  This
+        guarantees the symbol table is complete before we try to
+        resolve cross-file references in pass 2.
+
+        Pass 2: for every discovered file, emit the actual edges
+        (file imports + per-symbol calls / renders / uses-type).  Now
+        every reference either resolves to a known symbol, a known
+        external, or is dropped — no order-dependent "symbol -> file"
+        fallback edges.
+        """
+        entry = entry.resolve()
+        discovered_order = self._pass1_discover(entry)
+        for f in discovered_order:
+            self._pass2_emit_edges(f)
+
+    # ---- pass 1 ------------------------------------------------------------
+
+    def _pass1_discover(self, entry: Path) -> list[Path]:
+        """BFS imports; register file + symbol nodes.  Returns visit order."""
+        order: list[Path] = []
+        queue: deque[Path] = deque([entry])
         while queue:
             f = queue.popleft()
             if f in self._visited or not f.exists():
                 continue
             self._visited.add(f)
-            self._visit_file(f, queue)
+            order.append(f)
 
-    # ---- file-level --------------------------------------------------------
+            pf = parse_file(f)
+            if pf is None:
+                continue
+            rel = self._rel(f)
+            self.builder.add_file(rel)
 
-    def _visit_file(self, path: Path, queue: deque[Path]) -> None:
+            # Register symbols up front so pass 2 has a complete table.
+            symbols = list(extract_symbols(pf))
+            symbols.extend(iter_default_export(pf))
+            for sym in symbols:
+                self.builder.add_symbol(
+                    file_rel=rel,
+                    name=sym.name,
+                    kind=sym.kind,
+                    start_line=sym.start_line,
+                    end_line=sym.end_line,
+                    exported=sym.exported,
+                )
+
+            # Follow imports for discovery — don't emit edges yet.
+            for target in self._discover_imports(pf):
+                if target is not None and target not in self._visited:
+                    queue.append(target)
+        return order
+
+    def _discover_imports(self, pf) -> list[Optional[Path]]:
+        """Return resolved internal import targets to enqueue (externals dropped)."""
+        q = imports_query("tsx" if pf.path.suffix == ".tsx" else "ts")
+        matches = run_matches(q, pf.tree.root_node)
+        out: list[Optional[Path]] = []
+        for _, captures in matches:
+            source_nodes = captures.get("source") or []
+            if not source_nodes:
+                continue
+            source_text = pf.text(source_nodes[0])
+            if classify_specifier(source_text) is not None:
+                continue  # external — no recursion target
+            target = self._resolve_import_source(pf.path, source_nodes[0])
+            if target is None:
+                continue
+            if classify_resolved_path(target) is not None:
+                continue  # node_modules / TS lib
+            out.append(target.resolve())
+        return out
+
+    # ---- pass 2 ------------------------------------------------------------
+
+    def _pass2_emit_edges(self, path: Path) -> None:
         pf = parse_file(path)
         if pf is None:
             return
         rel = self._rel(path)
-        self.builder.add_file(rel)
-
-        # Imports (file-level edges)
-        self._process_imports(pf, rel, queue)
-
-        # Symbols (and per-symbol references)
-        symbols = list(extract_symbols(pf))
-        symbols.extend(iter_default_export(pf))
-        for sym in symbols:
-            self.builder.add_symbol(
-                file_rel=rel,
-                name=sym.name,
-                kind=sym.kind,
-                start_line=sym.start_line,
-                end_line=sym.end_line,
-                exported=sym.exported,
-            )
-            self._process_symbol_refs(pf, rel, sym, queue)
+        self._process_imports(pf, rel)
+        for sym in list(extract_symbols(pf)) + list(iter_default_export(pf)):
+            self._process_symbol_refs(pf, rel, sym)
 
     # ---- imports -----------------------------------------------------------
 
-    def _process_imports(self, pf, file_rel: str, queue: deque[Path]) -> None:
+    def _process_imports(self, pf, file_rel: str) -> None:
         q = imports_query("tsx" if pf.path.suffix == ".tsx" else "ts")
         matches = run_matches(q, pf.tree.root_node)
         for _, captures in matches:
@@ -103,10 +156,9 @@ class Traverser:
                 self.builder.add_edge_file_external(file_rel, ext.name, kind="imports")
                 continue
 
-            # Need to resolve — try LSP first, then fall back to filesystem.
             target = self._resolve_import_source(pf.path, source_nodes[0])
             if target is None:
-                # Unresolved bare specifier -> treat as external
+                # Unresolved bare specifier -> treat as external.
                 ext_name = source_text
                 self.builder.add_external(ext_name, "unresolved")
                 self.builder.add_edge_file_external(file_rel, ext_name, kind="imports")
@@ -118,11 +170,9 @@ class Traverser:
                 self.builder.add_edge_file_external(file_rel, ext_from_path.name, kind="imports")
                 continue
 
-            # Internal — enqueue and add file->file edge
             target_rel = self._rel(target)
             self.builder.add_file(target_rel)
             self.builder.add_edge_file_file(file_rel, target_rel, kind="imports")
-            queue.append(target.resolve())
 
     def _resolve_import_source(self, from_file: Path, source_node) -> Optional[Path]:
         """Resolve an import-source string node to a filesystem path."""
@@ -162,11 +212,12 @@ class Traverser:
 
     # ---- symbol references -------------------------------------------------
 
-    def _process_symbol_refs(self, pf, file_rel: str, sym, queue: deque[Path]) -> None:
+    def _process_symbol_refs(self, pf, file_rel: str, sym) -> None:
         if self.lsp is None:
-            # Without LSP we can't reliably resolve cross-file identifier
-            # references, so we skip symbol-level edges.  File-level
-            # import edges still capture the high-level architecture.
+            # Without an LSP we can't reliably resolve cross-file
+            # identifier references, so we skip symbol-level edges.
+            # File-level import edges still capture the high-level
+            # architecture.
             return
 
         refs = extract_references(pf, sym)
@@ -179,8 +230,7 @@ class Traverser:
                 continue
             target = _first_internal_definition(locs, self.project_root)
             if target is None:
-                # Either external or unresolved — best effort: skip
-                # (file-level imports already capture externals).
+                # Either external or unresolved — best effort: skip.
                 continue
 
             ext = classify_resolved_path(target.path)
@@ -195,18 +245,14 @@ class Traverser:
                 continue
 
             target_rel = self._rel(target.path)
-            # Locate the target symbol by name (best-effort).  We don't
-            # re-parse — we look up in the builder's known symbols.
+            # Pass 1 has already registered every reachable symbol,
+            # so this lookup is deterministic.
             target_sym = self.builder.find_symbol_at(target_rel, target.line + 1)
             if target_sym is None:
-                # The target file may not be visited yet; record an
-                # unresolved-by-position edge to the file as a fallback.
-                self.builder.add_file(target_rel)
-                self.builder.add_edge_symbol_file(
-                    file_rel=file_rel, sym_name=sym.name,
-                    target_file=target_rel, kind=ref.kind,
-                )
-                queue.append(target.path.resolve())
+                # Definition didn't land on a top-level symbol body
+                # (e.g. local variable, internal helper).  We omit it —
+                # the file-level import edge already says these two
+                # files are connected.
                 continue
 
             self.builder.add_edge_symbol_symbol(
@@ -214,7 +260,6 @@ class Traverser:
                 dst_file=target_rel, dst_name=target_sym,
                 kind=ref.kind,
             )
-            queue.append(target.path.resolve())
 
     # ---- helpers -----------------------------------------------------------
 

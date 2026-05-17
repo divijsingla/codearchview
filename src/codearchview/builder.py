@@ -10,6 +10,7 @@ Edges are deduplicated by (source, target, kind).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass, field, asdict
@@ -179,12 +180,66 @@ class GraphBuilder:
             "edges": [e.to_dict() for e in self._edges.values()],
         }
 
-    def write_json(self, out_path: Path, tool_version: str) -> None:
+    # ---- write-if-changed --------------------------------------------------
+
+    @staticmethod
+    def _hash_graph(nodes: list[dict], edges: list[dict]) -> str:
+        """Order-independent hash of (nodes, edges).
+
+        The traverser may legitimately enumerate nodes/edges in a
+        slightly different order across runs (LSP race conditions,
+        etc.) even when the set of nodes/edges is identical, so we
+        sort both lists before hashing.
+        """
+        sorted_nodes = sorted(nodes, key=lambda n: n.get("id", ""))
+        sorted_edges = sorted(
+            edges,
+            key=lambda e: (e.get("source", ""), e.get("target", ""), e.get("kind", "")),
+        )
+        body = json.dumps(
+            {"nodes": sorted_nodes, "edges": sorted_edges},
+            sort_keys=True,
+        )
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    def _structural_hash(self) -> str:
+        return self._hash_graph(
+            [n.to_dict() for n in self._nodes.values()],
+            [e.to_dict() for e in self._edges.values()],
+        )
+
+    @staticmethod
+    def _existing_structural_hash(path: Path) -> Optional[str]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        try:
+            return GraphBuilder._hash_graph(
+                data.get("nodes", []), data.get("edges", [])
+            )
+        except Exception:
+            return None
+
+    def write_json(self, out_path: Path, tool_version: str, *, force: bool = False) -> bool:
+        """Write the graph JSON to `out_path`.
+
+        Returns True if the file was (re)written, False if the on-disk
+        graph already matches what we just computed and we deliberately
+        skipped the write to avoid spurious git churn from timestamps.
+
+        Pass `force=True` to always rewrite.
+        """
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        if not force and out_path.exists():
+            existing = self._existing_structural_hash(out_path)
+            if existing is not None and existing == self._structural_hash():
+                return False
         out_path.write_text(
             json.dumps(self.to_dict(tool_version), indent=2, sort_keys=False) + "\n",
             encoding="utf-8",
         )
+        return True
 
 
 def _git_commit_short(repo_root: Path) -> Optional[str]:

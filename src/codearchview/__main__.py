@@ -49,6 +49,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not follow type-only references (smaller graph, faster).",
     )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Always rewrite the output file even if the graph is unchanged. "
+            "By default, identical graphs leave the file alone so commit/"
+            "timestamp metadata does not create spurious git diffs."
+        ),
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--version", action="version", version=f"codearchview {__version__}")
     return p
@@ -123,10 +132,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     out_path = Path(args.out).resolve()
-    builder.write_json(out_path, tool_version=__version__)
+    wrote = builder.write_json(out_path, tool_version=__version__, force=args.force)
     n_nodes = len(builder._nodes)  # noqa: SLF001 — internal but stable
     n_edges = len(builder._edges)  # noqa: SLF001
-    print(f"wrote {out_path} ({n_nodes} nodes, {n_edges} edges)")
+    if wrote:
+        print(f"wrote {out_path} ({n_nodes} nodes, {n_edges} edges)")
+    else:
+        print(f"unchanged {out_path} ({n_nodes} nodes, {n_edges} edges)")
     return 0
 
 
